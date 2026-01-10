@@ -1,6 +1,7 @@
 # Streamlit_Rendering/function.py
 import json
 from datetime import datetime, timezone
+from turtle import left
 
 import numpy as np
 import pandas as pd
@@ -150,20 +151,21 @@ def render_admin_page():
     left, right = st.columns([0.6, 0.4])
 
     with left:
-        st.subheader("데이터 적재/갱신")
+        st.subheader("URL 1개 크롤링 → DB 적재")
 
-        if st.button("파이프라인 실행: 크롤링→요약→임베딩→키워드→신뢰도→DB", use_container_width=True):
-            try:
-                with st.spinner("파이프라인 실행 중..."):
-                    # admin_pipeline 내부에서 summary.py, trust.py 등을 사용하도록 구성하십시오.
-                    df_raw = ap.crawl_latest_articles()
-                    df_ready = ap.build_ready_rows(df_raw)
-                    repo.upsert_articles(df_ready)
-                st.success(f"적재 완료: {len(df_ready)}건")
-            except NotImplementedError:
-                st.error("admin_pipeline.py가 아직 미완입니다. (crawl/build_ready_rows 등 구현 필요)")
-            except Exception as e:
-                st.error(f"파이프라인 실패: {e}")
+        url = st.text_input("최신 뉴스 URL(더미)", value="https://www.hani.co.kr/arti/area/yeongnam/1238999")
+        dedup = st.checkbox("중복 URL 스킵", value=True)
+
+        if st.button("크롤링 실행", use_container_width=True):
+            with st.spinner("URL 크롤링 및 DB 적재 중..."):
+                result = ap.ingest_one_url(url=url, source="manual", dedup_by_url=dedup)
+
+            if result["status"] == "inserted":
+                st.success(result["message"])
+            elif result["status"] == "skipped":
+                st.info(result["message"])
+            else:
+                st.error(result["message"])
 
         st.caption("주의: 사용자 페이지에서는 요약/신뢰도 계산을 절대 수행하지 않습니다. 계산은 관리자 파이프라인에서만 하십시오.")
 
@@ -175,6 +177,9 @@ def render_admin_page():
                 st.info("이미 DB에 데이터가 존재합니다(추가 적재 없음).")
             else:
                 st.success(f"MOCK_DB 적재 완료: {n}건")
+
+        
+        st.caption("주의: 사용자 페이지에서는 요약/신뢰도 계산을 절대 수행하지 않습니다. 계산은 관리자 파이프라인에서만 하십시오.")
 
     with right:
         st.subheader("대시보드(더미)")
