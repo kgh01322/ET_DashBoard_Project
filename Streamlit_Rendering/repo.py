@@ -35,11 +35,30 @@ def init_db():
     """)
     con.close()
 
+def exists_article_url(url: str) -> bool:
+    con = duckdb.connect(DB_PATH)
+    try:
+        res = con.execute("SELECT 1 FROM articles WHERE url = ? LIMIT 1", [url]).fetchone()
+        return res is not None
+    finally:
+        con.close()
+
 def upsert_articles(df: pd.DataFrame):
     con = duckdb.connect(DB_PATH)
-    con.register("df", df)
-    con.execute("INSERT OR REPLACE INTO articles SELECT * FROM df")
-    con.close()
+    try:
+        con.register("df", df)
+
+        cols = list(df.columns)
+        col_list = ", ".join(cols)
+        select_list = ", ".join(cols)
+
+        con.execute(f"""
+            INSERT OR REPLACE INTO articles ({col_list})
+            SELECT {select_list} FROM df
+        """)
+    finally:
+        con.close()
+
 
 def load_articles(where_sql: str = "") -> pd.DataFrame:
     con = duckdb.connect(DB_PATH)
