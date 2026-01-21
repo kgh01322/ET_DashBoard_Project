@@ -193,14 +193,4 @@ class FastKoBertSummarizer:
         # 반환 (순서: 요약, 키워드, 본문임베딩, 키워드임베딩, 요약임베딩, 점수)
         return summary, keywords, content_emb, keyword_emb, summary_emb, trust_score
 
-# --- 테스트 실행 코드 (이 파일만 직접 실행했을 때 동작) ---
-if __name__ == "__main__":
-    print("🚀 NLP Engine Test Mode")
-    analyzer = FastKoBertSummarizer()
-    test_text = "이것은 테스트 뉴스 기사 본문입니다. AI가 잘 동작하는지 확인합니다."
-    summ, kws, c_emb, k_emb, s_emb, score = analyzer.analyze_single(test_text)
-    
-    print(f"Summary: {summ}")
-    print(f"Keywords: {kws}")
-    print(f"Trust Score: {score}")
-    print(f"Content Emb Shape: {c_emb.shape}")
+
