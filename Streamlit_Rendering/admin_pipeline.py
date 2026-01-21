@@ -2,36 +2,31 @@
 
 import json
 import pandas as pd
-import streamlit as st # Streamlit 기능 사용을 위해 import
-from keybert import KeyBERT # 키워드 추출용
+import numpy as np
+import streamlit as st
 
 from Streamlit_Rendering.crawl import fetch_article_from_url
 from Streamlit_Rendering import repo
-# summary.py에서 실제 모델 클래스를 가져옵니다.
+# summary.py에서 클래스와 더미 함수 가져오기
 from Streamlit_Rendering.summary import FastKoBertSummarizer, summarize_text_dummy
 from Streamlit_Rendering.trust import score_trust_dummy
 
 # --------------------------------------------------------------------------
-# [핵심] 모델 캐싱: Streamlit이 모델을 한 번만 로드하도록 설정
+# 1. 모델 캐싱 (가장 중요!)
+# Streamlit은 새로고침할 때마다 코드를 다시 실행하는데, 
+# 모델 로딩을 매번 하면 서버가 터집니다. 이를 방지하는 코드입니다.
 # --------------------------------------------------------------------------
 @st.cache_resource
-def load_models():
+def load_summarizer_model():
     """
-    이 함수는 앱이 실행될 때 딱 한 번만 실행되어 모델을 메모리에 올립니다.
+    FastKoBertSummarizer 모델을 메모리에 한 번만 올리고 재사용합니다.
     """
-    print("Loading AI Models... (This happens only once)")
-    
-    # 1. 요약 모델 로드
-    summarizer = FastKoBertSummarizer() 
-    
-    # 2. 키워드 추출 모델 로드 (KeyBERT)
-    # 한국어 처리에 좋은 다국어 모델을 사용합니다.
-    kw_model = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
-    
-    return summarizer, kw_model
+    print("🚀 Loading FastKoBertSummarizer... (First time only)")
+    model = FastKoBertSummarizer()
+    return model
 
 # --------------------------------------------------------------------------
-# 실제 실행 함수들
+# 2. 메인 로직
 # --------------------------------------------------------------------------
 
 ARTICLE_COLUMNS = [
@@ -43,15 +38,20 @@ ARTICLE_COLUMNS = [
 
 def ingest_one_url(url: str, source: str = "manual", dedup_by_url: bool = True) -> dict:
     """
-    URL 1개 → 크롤링 → (중복 필터링) → DB 적재
+    URL 1개 → 크롤링 → (중복 필터링) → 모델 분석 → DB 적재
     """
     try:
+        # 1. 중복 체크
         if dedup_by_url and repo.exists_article_url(url):
             return {"status": "skipped", "message": "이미 DB에 존재하는 URL입니다. (중복 스킵)", "url": url}
 
+        # 2. 크롤링
         df_raw = fetch_article_from_url(url=url, source=source)
-        df_ready = build_ready_rows(df_raw) # 여기서 실제 모델을 돌립니다.
+        
+        # 3. 데이터 가공 및 모델 실행 (여기가 핵심)
+        df_ready = build_ready_rows(df_raw)
 
+        # 4. DB 적재
         repo.upsert_articles(df_ready)
         return {"status": "inserted", "message": "DB에 1건 적재되었습니다.", "url": url}
 
@@ -59,73 +59,45 @@ def ingest_one_url(url: str, source: str = "manual", dedup_by_url: bool = True) 
         return {"status": "error", "message": f"크롤링/적재 실패: {e}", "url": url}
 
 
-def run_summary(full_text: str) -> str:
-    """
-    캐싱된 모델을 불러와서 실제 요약을 수행합니다.
-    """
-    if not full_text:
-        return ""
-    
-    try:
-        # 1. 모델 가져오기 (캐시된 것 사용)
-        summarizer, _ = load_models()
-        
-        # 2. 요약 수행 (summary.py의 클래스 메서드 이름이 summarize라고 가정)
-        # 만약 메서드 이름이 다르면 summarizer.메서드명(full_text)로 바꿔주세요.
-        summary = summarizer.summarize(full_text) 
-        
-        return summary
-    except Exception as e:
-        print(f"Summary Error: {e}")
-        return summarize_text_dummy(full_text, max_chars=100) # 에러 시 더미 반환
-
-
-def run_keywords(full_text: str) -> list[str]:
-    """
-    KeyBERT를 이용해 키워드 5개를 추출합니다.
-    """
-    if not full_text:
-        return []
-        
-    try:
-        # 1. 모델 가져오기 (캐시된 것 사용)
-        _, kw_model = load_models()
-        
-        # 2. 키워드 추출
-        keywords_tuple = kw_model.extract_keywords(
-            full_text, 
-            keyphrase_ngram_range=(1, 1), 
-            stop_words=None, 
-            top_n=5
-        )
-        # 결과가 [('키워드', 0.5), ...] 형태이므로 단어만 추출
-        return [k[0] for k in keywords_tuple]
-        
-    except Exception as e:
-        print(f"Keyword Error: {e}")
-        return []
-
-
-def run_embedding(text: str) -> list[float]:
-    # 임베딩은 아직 구현하지 않음 (나중에 필요하면 SentenceTransformer 추가)
-    return []
-
-
-def run_trust(full_text: str, source: str) -> dict:
-    return score_trust_dummy(full_text, source=source, low=30, high=100)
-
-
 def build_ready_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    크롤링된 데이터를 받아 모델(FastKoBertSummarizer)을 돌려 
+    요약, 키워드, 임베딩을 채워 넣습니다.
+    """
+    # 캐싱된 모델 불러오기
+    model = load_summarizer_model()
+    
     rows = []
     for _, r in df_raw.iterrows():
         full_text = str(r["full_text"])
         source = str(r["source"])
-
-        # [변경] 더미 함수 대신 실제 모델 실행 함수 호출
-        summary_text = run_summary(full_text)
-        keywords_list = run_keywords(full_text)
         
-        trust = run_trust(full_text, source)
+        # -------------------------------------------------------
+        # [핵심] 모델 analyze_single 메서드 한 번 호출로 모든 값 획득
+        # 반환값 순서: summary, keywords, content_emb, keyword_emb, summary_emb, trust_score
+        # -------------------------------------------------------
+        try:
+            summary, keywords, content_emb, keyword_emb, summary_emb, trust_score_model = model.analyze_single(full_text)
+            
+            # Numpy 배열을 JSON 저장을 위해 리스트로 변환
+            embed_full_list = content_emb.tolist() if hasattr(content_emb, 'tolist') else []
+            embed_summary_list = summary_emb.tolist() if hasattr(summary_emb, 'tolist') else []
+            
+        except Exception as e:
+            print(f"❌ Model Analysis Error: {e}")
+            # 에러 발생 시 더미 값으로 대체
+            summary = summarize_text_dummy(full_text)
+            keywords = []
+            embed_full_list = []
+            embed_summary_list = []
+            trust_score_model = 50
+
+        # 신뢰도 상세 평가 (Trust 로직은 별도 함수와 병행 사용)
+        trust_detail = score_trust_dummy(full_text, source=source, low=30, high=100)
+        
+        # 모델 점수와 룰베이스 점수 중 모델 점수를 우선하거나 평균을 낼 수 있음
+        # 여기서는 모델 점수를 우선으로 넣음
+        final_trust_score = int(trust_score_model)
 
         rows.append({
             "article_id": str(r["article_id"]),
@@ -135,18 +107,43 @@ def build_ready_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
             "published_at": str(r["published_at"]),
             "full_text": full_text,
 
-            "summary_text": summary_text,
-            "keywords": json.dumps(keywords_list, ensure_ascii=False), # 리스트를 JSON 문자열로 변환
-            "embed_full": json.dumps([]),
-            "embed_summary": json.dumps([]),
+            # 모델 분석 결과 매핑
+            "summary_text": summary,
+            "keywords": json.dumps(keywords, ensure_ascii=False), # 리스트 -> JSON 문자열
+            "embed_full": json.dumps(embed_full_list),            # 리스트 -> JSON 문자열
+            "embed_summary": json.dumps(embed_summary_list),      # 리스트 -> JSON 문자열
 
-            "trust_score": int(trust.get("score", 50)),
-            "trust_verdict": trust.get("verdict", "uncertain"),
-            "trust_reason": trust.get("reason", ""),
-            "trust_per_criteria": json.dumps(trust.get("per_criteria", {}), ensure_ascii=False),
+            # 신뢰도 정보
+            "trust_score": final_trust_score,
+            "trust_verdict": trust_detail.get("verdict", "uncertain"),
+            "trust_reason": trust_detail.get("reason", ""),
+            "trust_per_criteria": json.dumps(trust_detail.get("per_criteria", {}), ensure_ascii=False),
 
             "status": "ready",
         })
 
     df_ready = pd.DataFrame(rows).reindex(columns=ARTICLE_COLUMNS)
     return df_ready
+
+# --------------------------------------------------------------------------
+# 개별 테스트용 함수 (필요한 경우에만 사용)
+# build_ready_rows에서 이미 다 처리하므로 실제 파이프라인에서는 잘 안 쓰임
+# --------------------------------------------------------------------------
+
+def run_summary(full_text: str) -> str:
+    model = load_summarizer_model()
+    summary, _, _, _, _, _ = model.analyze_single(full_text)
+    return summary
+
+def run_keywords(full_text: str) -> list[str]:
+    model = load_summarizer_model()
+    _, keywords, _, _, _, _ = model.analyze_single(full_text)
+    return keywords
+
+def run_embedding(text: str) -> list[float]:
+    model = load_summarizer_model()
+    # 임베딩만 필요할 때 (Batch 처리 활용)
+    emb = model.get_embedding_batch([text])[0]
+    return emb.tolist()
+
+def run_trust(full_text: str, source: str
