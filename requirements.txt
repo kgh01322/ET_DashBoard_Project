@@ -56,7 +56,13 @@ watchdog==6.0.0
 websockets==15.0.1
 yt-dlp==2025.9.26
 duckdb
-requests
 beautifulsoup4
 lxml
 
+# --- [추가된 라이브러리: AI 모델 구동용] ---
+torch
+transformers
+sentence-transformers
+keybert
+kobert-transformers
+scikit-learn
